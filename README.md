@@ -36,3 +36,7 @@ repo/
     docker-compose.yaml
     nginx/
 ```
+
+## Development Guide
+
+- [Commit Convention](./docs/commit-convention.md)
