@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unused-vars */
 import type {
   ApplyResult,
   DealRoleState,
@@ -47,15 +46,16 @@ export function buildLobbyState(roomCode: string, hostSocketId: string, hostName
 }
 
 export function toPublicState(room: RoomState): PublicRoomSnapshot {
-  // Never expose roles in public snapshot.
   const base = {
     ...room,
-    players: room.players.map(({ role, ...rest }) => rest),
+    players: room.players.map(({ socketId, name, joinedAt, isReady, alive }) => {
+      return { socketId, name, joinedAt, isReady, alive };
+    }),
   };
 
   // Mask votes in vote states (do not reveal targets in public).
   if (room.kind === "VOTE_OPEN" || room.kind === "VOTE_RESOLVE") {
-    return { ...base, votes: maskVotes(room.votes) };
+    return { ...base, votes: maskVotes(room.votes) } as VoteOpenState | VoteResolveState;
   }
 
   return base;

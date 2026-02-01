@@ -1,5 +1,6 @@
 import { Injectable } from "@nestjs/common";
-import type { RoomState } from "../types";
+import { applyEvent, buildLobbyState } from "../game/fsm";
+import type { ApplyResult, GameEvent, RoomState } from "../types";
 
 function randomCode(len = 4) {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -10,31 +11,14 @@ function randomCode(len = 4) {
 
 @Injectable()
 export class RoomService {
-  // roomCode -> roomState
-  private rooms = new Map<string, RoomState>();
-  // socketId -> roomCode (so we can clean up quickly)
-  private socketToRoom = new Map<string, string>();
+  private rooms = new Map<string, RoomState>(); // room code와 room을 매핑
+  private socketToRoom = new Map<string, string>(); // socketId와 room을 매핑
 
-  createRoom(hostSocketId: string, hostName: string): RoomState {
+  createRoom(hostSocketId: string, hostName: string, now = Date.now()): RoomState {
     let code = randomCode();
     while (this.rooms.has(code)) code = randomCode();
 
-    const now = Date.now();
-    const room: RoomState = {
-      roomCode: code,
-      phase: "LOBBY",
-      hostSocketId,
-      createdAt: now,
-      players: [
-        {
-          socketId: hostSocketId,
-          name: hostName,
-          isReady: false,
-          joinedAt: now,
-        },
-      ],
-    };
-
+    const room = buildLobbyState(code, hostSocketId, hostName, now);
     this.rooms.set(code, room);
     this.socketToRoom.set(hostSocketId, code);
     return room;
@@ -50,72 +34,56 @@ export class RoomService {
     return this.rooms.get(code);
   }
 
-  joinRoom(code: string, socketId: string, name: string): RoomState | undefined {
-    const room = this.rooms.get(code);
-    if (!room) return undefined;
-
-    // Disallow joining non-lobby rooms for this prototype
-    if (room.phase !== "LOBBY") return undefined;
-
-    const already = room.players.find((p) => p.socketId === socketId);
-    if (already) return room;
-
-    room.players.push({
-      socketId,
-      name,
-      isReady: false,
-      joinedAt: Date.now(),
-    });
-
-    this.socketToRoom.set(socketId, code);
-    return room;
+  getRoomCodeBySocket(socketId: string): string | undefined {
+    return this.socketToRoom.get(socketId);
   }
 
-  leaveRoom(socketId: string): { room?: RoomState; removed?: boolean } {
-    const code = this.socketToRoom.get(socketId);
-    if (!code) return { removed: false };
+  joinRoom(code: string, socketId: string, name: string, at = Date.now()) {
+    return this.dispatch(code, { type: "PLAYER_JOIN", socketId, name, at });
+  }
 
-    const room = this.rooms.get(code);
-    if (!room) {
-      this.socketToRoom.delete(socketId);
-      return { removed: false };
+  leaveRoom(socketId: string, at = Date.now()): ApplyResult {
+    const roomCode = this.getRoomCodeBySocket(socketId);
+    if (!roomCode) return { ok: false, reason: "ROOM_NOT_FOUND", code: "NOT_FOUND" };
+    return this.dispatch(roomCode, { type: "PLAYER_LEAVE", socketId, at });
+  }
+
+  setReady(socketId: string, isReady: boolean, at = Date.now()): ApplyResult {
+    const roomCode = this.getRoomCodeBySocket(socketId);
+    if (!roomCode) return { ok: false, reason: "ROOM_NOT_FOUND", code: "NOT_FOUND" };
+    return this.dispatch(roomCode, { type: "PLAYER_LEAVE", socketId, at });
+  }
+
+  startGame(socketId: string, at = Date.now()): ApplyResult {
+    const roomCode = this.getRoomCodeBySocket(socketId);
+    if (!roomCode) return { ok: false, reason: "NOT_IN_ROOM", code: "NOT_FOUND" };
+    return this.dispatch(roomCode, { type: "START_GAME", socketId, at });
+  }
+
+  dispatch(roomCode: string, event: GameEvent): ApplyResult {
+    const room = this.rooms.get(roomCode);
+    if (!room) return { ok: false, reason: "ROOM_NOT_FOUND", code: "NOT_FOUND" };
+
+    const prevIds = new Set(room.players.map((p) => p.socketId));
+
+    const result = applyEvent(room, event);
+    if (!result.ok) return result;
+
+    this.rooms.set(roomCode, result.room);
+    this.reindexSocketsByPrevIds(prevIds, result.room);
+
+    if (result.room.players.length === 0) this.rooms.delete(roomCode);
+    return result;
+  }
+
+  private reindexSocketsByPrevIds(prevIds: Set<string>, next: RoomState) {
+    const nextIds = new Set(next.players.map((p) => p.socketId));
+
+    for (const id of prevIds) {
+      if (!nextIds.has(id)) this.socketToRoom.delete(id);
     }
-
-    const before = room.players.length;
-    room.players = room.players.filter((p) => p.socketId !== socketId);
-    this.socketToRoom.delete(socketId);
-
-    // Host transfer (simple): next player becomes host
-    if (room.hostSocketId === socketId) {
-      room.hostSocketId = room.players[0]?.socketId ?? "";
+    for (const id of nextIds) {
+      this.socketToRoom.set(id, next.roomCode);
     }
-
-    // If empty, destroy room
-    if (room.players.length === 0) {
-      this.rooms.delete(code);
-      return { removed: true };
-    }
-
-    return { room, removed: before !== room.players.length };
-  }
-
-  setReady(socketId: string, isReady: boolean): RoomState | undefined {
-    const room = this.getRoomBySocket(socketId);
-    if (!room) return undefined;
-    const p = room.players.find((x) => x.socketId === socketId);
-    if (!p) return undefined;
-    p.isReady = isReady;
-    return room;
-  }
-
-  canStart(room: RoomState): boolean {
-    if (room.phase !== "LOBBY") return false;
-    if (room.players.length < 2) return false;
-    return room.players.every((p) => p.isReady || p.socketId === room.hostSocketId); // host doesn’t have to ready (optional)
-  }
-
-  start(room: RoomState): RoomState {
-    room.phase = "IN_GAME";
-    return room;
   }
 }
