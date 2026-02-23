@@ -16,7 +16,7 @@ import type {
   VoteResolveState,
 } from "../types";
 
-// Tunable timings for an MVP. Keep small for faster tests/dev.
+// MVP용 조정 가능한 타이밍 값. 테스트/개발 속도를 위해 현재는 작게 유지.
 const MIN_PLAYERS_TO_START = 3;
 const DEAL_ROLE_MS = 1_000;
 const DISCUSSION_MS = 30_000;
@@ -25,6 +25,12 @@ const VOTE_RESOLVE_MS = 3_000;
 
 const timeoutKinds: TimeoutKind[] = ["DEAL_ROLE", "DISCUSSION", "VOTE", "VOTE_RESOLVE"];
 
+/**
+ * 새 방 생성 시 초기 로비 상태 생성
+ * - 호스트 플레이어 객체 생성
+ * - round: 0
+ * - players: [host]
+ */
 export function buildLobbyState(roomCode: string, hostSocketId: string, hostName: string, now: number): LobbyState {
   const host: PlayerState = {
     socketId: hostSocketId,
@@ -45,15 +51,17 @@ export function buildLobbyState(roomCode: string, hostSocketId: string, hostName
   };
 }
 
+/**
+ * - RoomState에서 players의 role을 감춤 (라이어/시민 숨김)
+ * - 투표 상태(VOTE_OPEN, VOTE_RESOLVE)에서는 votes 마스킹
+ */
 export function toPublicState(room: RoomState): PublicRoomSnapshot {
   const base = {
     ...room,
-    players: room.players.map(({ socketId, name, joinedAt, isReady, alive }) => {
-      return { socketId, name, joinedAt, isReady, alive };
-    }),
+    players: room.players.map(({ role: _role, ...rest }) => rest),
   };
 
-  // Mask votes in vote states (do not reveal targets in public).
+  // 투표 상태에서는 투표 대상을 마스킹한다(공개 상태에선 대상 비공개).
   if (room.kind === "VOTE_OPEN" || room.kind === "VOTE_RESOLVE") {
     return { ...base, votes: maskVotes(room.votes) } as VoteOpenState | VoteResolveState;
   }
@@ -61,6 +69,9 @@ export function toPublicState(room: RoomState): PublicRoomSnapshot {
   return base;
 }
 
+/**
+ * 현재 방에 일치하는 selfId의 플레이어가 있으면 self를 추가하고, 없으면 undefined로 지정한 RoomState 반환
+ */
 export function toPrivateState(room: RoomState, socketId: string): PrivateRoomSnapshot {
   const self = room.players.find((p) => p.socketId === socketId);
   return {
@@ -70,17 +81,21 @@ export function toPrivateState(room: RoomState, socketId: string): PrivateRoomSn
 }
 
 /**
- * Apply a domain event to the room. Must be the ONLY path to mutate state.
- * - Leave/disconnect: hard remove (MVP choice).
- * - TIMEOUT: should be safe against stale timers.
+ * 이벤트를 적용하는 함수. 상태 변경의 유일한 진입점.
+ * - leave/disconnect: 즉시 제거(hard remove, MVP 정책)
+ * - TIMEOUT: 오래된(취소된) 타이머 콜백이 와도 안전하게 처리되어야 함
  */
 export function applyEvent(room: RoomState, event: GameEvent): ApplyResult {
-  // Allow hard exits in any state (MVP).
+  // 어떤 상태에서든 강제 퇴장을 허용한다(MVP 정책).
   if (event.type === "PLAYER_LEAVE" || event.type === "DISCONNECT") {
     return removePlayer(room, event.socketId, event.at);
   }
 
-  // Treat stale timeouts as no-ops (canceled timers can still fire).
+  if (event.type === "RECONNECT") {
+    return reconnectPlayer(room, event.socketId, event.newSocketId, event.at);
+  }
+
+  // 오래된 타임아웃은 no-op으로 처리한다(이미 취소됐는데 늦게 도착한 타이머도 뒤늦게 실행될 수 있음).
   if (event.type === "TIMEOUT" && !isExpectedTimeout(room, event.kind)) {
     return okResult(room, []);
   }
@@ -103,6 +118,9 @@ export function applyEvent(room: RoomState, event: GameEvent): ApplyResult {
   }
 }
 
+/**
+ * 현재 상태에서 해당 타이머 종류가 유효한지를 확인
+ */
 function isExpectedTimeout(room: RoomState, kind: TimeoutKind): boolean {
   switch (room.kind) {
     case "DEAL_ROLE":
@@ -118,6 +136,11 @@ function isExpectedTimeout(room: RoomState, kind: TimeoutKind): boolean {
   }
 }
 
+/**
+ * - 대상 상태: LOBBY
+ * - 처리 이벤트: PLAYER_JOIN, READY_ON, READY_OFF, START_GAME
+ * - 나머지는 wrongState
+ */
 function lobbyReducer(room: LobbyState, event: GameEvent): ApplyResult {
   switch (event.type) {
     case "PLAYER_JOIN": {
@@ -229,7 +252,7 @@ function discussionReducer(room: DiscussionState, event: GameEvent): ApplyResult
   }
 
   if (event.type === "SUBMIT_ACTION") {
-    // MVP: allow chat/actions without changing state.
+    // MVP: 채팅/행동 제출은 허용하지만 상태는 변경하지 않는다.
     return okResult({ ...room, lastEventAt: event.at }, []);
   }
 
@@ -277,8 +300,8 @@ function voteResolveReducer(room: VoteResolveState, event: GameEvent): ApplyResu
 }
 
 function endReducer(room: EndState, event: GameEvent): ApplyResult {
-  // Leave/disconnect already handled in applyEvent() as hard exits.
-  // Everything else is rejected (unless you add RESTART_GAME later).
+  // leave/disconnect는 이미 applyEvent()에서 강제 퇴장으로 처리됨.
+  // 그 외 이벤트는 모두 거절(나중에 RESTART_GAME을 추가하기 전까지).
   return { ok: false, reason: `WRONG_STATE_FOR_${event.type}` };
 }
 
@@ -298,7 +321,7 @@ function removePlayer(room: RoomState, socketId: string, at: number): ApplyResul
     lastEventAt: at,
   };
 
-  // Preserve state-specific fields correctly.
+  // 상태별 필드를 올바르게 유지하면서 재구성한다.
   let next: RoomState;
   switch (room.kind) {
     case "LOBBY":
@@ -340,10 +363,10 @@ function removePlayer(room: RoomState, socketId: string, at: number): ApplyResul
       return { ok: false, reason: "UNKNOWN_STATE" };
   }
 
-  // If empty room, cancel all timers. RoomService can delete the room after.
+  // 방이 비었으면 모든 타이머를 취소한다. 이후 RoomService가 방을 삭제할 수 있다.
   if (remaining.length === 0) return okResult(next, cancelAllTimers());
 
-  // Win-condition check only makes sense after roles exist (i.e., non-LOBBY).
+  // 승리 조건 검사는 역할이 존재하는 상태(즉, LOBBY 아님)에서만 의미가 있다.
   if (next.kind !== "LOBBY") {
     const liarAlive = next.players.some((p) => p.role === "LIAR" && p.alive);
     const civAlive = next.players.some((p) => p.role !== "LIAR" && p.alive);
@@ -362,6 +385,76 @@ function removePlayer(room: RoomState, socketId: string, at: number): ApplyResul
   return okResult(next, [{ type: "BROADCAST_PUBLIC_STATE" }]);
 }
 
+function reconnectPlayer(room: RoomState, oldSocketId: string, newSocketId: string, at: number): ApplyResult {
+  if (!room.players.some((p) => p.socketId === oldSocketId)) {
+    return { ok: false, reason: "NOT_IN_ROOM", code: "NOT_FOUND" };
+  }
+
+  if (oldSocketId !== newSocketId && room.players.some((p) => p.socketId === newSocketId)) {
+    return { ok: false, reason: "NEW_SOCKET_ALREADY_IN_ROOM", code: "CONFLICT" };
+  }
+
+  const players = room.players.map((p) => (p.socketId === oldSocketId ? { ...p, socketId: newSocketId } : p));
+  const hostSocketId = room.hostSocketId === oldSocketId ? newSocketId : room.hostSocketId;
+
+  const base: RoomStateBase = {
+    roomCode: room.roomCode,
+    hostSocketId,
+    createdAt: room.createdAt,
+    round: room.round,
+    players,
+    lastEventAt: at,
+  };
+
+  let next: RoomState;
+  switch (room.kind) {
+    case "LOBBY":
+      next = { ...base, kind: "LOBBY" };
+      break;
+    case "DEAL_ROLE":
+      next = { ...base, kind: "DEAL_ROLE" };
+      break;
+    case "DISCUSSION_ROUND":
+      next = { ...base, kind: "DISCUSSION_ROUND", discussionEndsAt: room.discussionEndsAt };
+      break;
+    case "VOTE_OPEN":
+      next = {
+        ...base,
+        kind: "VOTE_OPEN",
+        votes: remapVoteRecord(room.votes, oldSocketId, newSocketId),
+        voteEndsAt: room.voteEndsAt,
+      };
+      break;
+    case "VOTE_RESOLVE":
+      next = {
+        ...base,
+        kind: "VOTE_RESOLVE",
+        votes: remapVoteRecord(room.votes, oldSocketId, newSocketId),
+        tally: remapTallyRecord(room.tally, oldSocketId, newSocketId),
+        eliminated: room.eliminated === oldSocketId ? newSocketId : room.eliminated,
+        resolveEndsAt: room.resolveEndsAt,
+      };
+      break;
+    case "END":
+      next = {
+        ...base,
+        kind: "END",
+        winner: room.winner,
+        eliminated: room.eliminated === oldSocketId ? newSocketId : room.eliminated,
+      };
+      break;
+    default:
+      return { ok: false, reason: "UNKNOWN_STATE" };
+  }
+
+  const actions: GameAction[] =
+    oldSocketId === newSocketId
+      ? [{ type: "EMIT_PRIVATE_STATE", socketId: newSocketId }]
+      : [{ type: "BROADCAST_PUBLIC_STATE" }, { type: "EMIT_PRIVATE_STATE", socketId: newSocketId }];
+
+  return okResult(next, actions);
+}
+
 function removeFromVotes(votes: Record<string, string | null>, removedId: string): Record<string, string | null> {
   const next = { ...votes };
   delete next[removedId];
@@ -369,6 +462,29 @@ function removeFromVotes(votes: Record<string, string | null>, removedId: string
     if (next[voter] === removedId) next[voter] = null;
   }
   return next;
+}
+
+function remapVoteRecord(
+  votes: Record<string, string | null>,
+  oldSocketId: string,
+  newSocketId: string,
+): Record<string, string | null> {
+  return Object.fromEntries(
+    Object.entries(votes).map(([voter, target]) => [
+      voter === oldSocketId ? newSocketId : voter,
+      target === oldSocketId ? newSocketId : target,
+    ]),
+  );
+}
+
+function remapTallyRecord(
+  tally: Record<string, number>,
+  oldSocketId: string,
+  newSocketId: string,
+): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(tally).map(([target, count]) => [target === oldSocketId ? newSocketId : target, count]),
+  );
 }
 
 function resolveVotes(room: VoteOpenState, at: number, prependActions: GameAction[]): ApplyResult {
@@ -399,6 +515,11 @@ function resolveVotes(room: VoteOpenState, at: number, prependActions: GameActio
   return okResult(next, actions);
 }
 
+/**
+ * - 결과 공개 후 다음 라운드로 갈지 게임 종료할지 결정
+ * - 종료 조건: 라이어 사망, 시민 전멸, 생존자 2명 이하
+ * - 종료 시: END 상태, 모든 타이머 취소, Public state 브로드캐스트
+ */
 function advanceFromVoteResolve(room: VoteResolveState, at: number): ApplyResult {
   const liarAlive = room.players.some((p) => p.role === "LIAR" && p.alive);
   const civAlive = room.players.some((p) => p.role !== "LIAR" && p.alive);
@@ -424,6 +545,9 @@ function advanceFromVoteResolve(room: VoteResolveState, at: number): ApplyResult
   return okResult(next, actions);
 }
 
+/**
+ * 플레이어 중 랜덤 1명을 라이어로 지정
+ */
 function assignRoles(players: PlayerState[]): PlayerState[] {
   const liarIndex = Math.floor(Math.random() * players.length);
   return players.map((p, idx) => ({
@@ -434,6 +558,9 @@ function assignRoles(players: PlayerState[]): PlayerState[] {
   }));
 }
 
+/**
+ * Record<voter, target|null>을 Record<target, count>로 집계
+ */
 function countVotes(votes: Record<string, string | null>): Record<string, number> {
   const tally: Record<string, number> = {};
   Object.values(votes)
@@ -444,6 +571,12 @@ function countVotes(votes: Record<string, string | null>): Record<string, number
   return tally;
 }
 
+/**
+ * - 최다 득표를 받은 탈락자 결정
+ * - 최고 득표 1명이면 그 소켓ID를 반환하고, 동점이거나 표가 없으면 null 반환
+ * @param tally
+ * @returns id | null
+ */
 function pickElimination(tally: Record<string, number>): string | null {
   let best: { id: string; votes: number } | null = null;
   let tie = false;
@@ -461,15 +594,26 @@ function pickElimination(tally: Record<string, number>): string | null {
   return best.id;
 }
 
+/**
+ * 생존자 전원이 투표했는지 확인 (기권 비허용)
+ */
 function allAliveVoted(room: VoteOpenState): boolean {
-  // “voted” means non-null target (no abstain). If you want abstain, change this definition.
+  // 여기서 “투표 완료”는 target이 null이 아닌 상태를 의미한다(기권 없음).
+  // 기권을 허용하려면 이 정의를 바꿔야 한다.
   return room.players.filter((p) => p.alive).every((p) => room.votes[p.socketId] !== null);
 }
 
+/**
+ * - 모든 타이머 종류에 대한 CANCLE_TIMEOUT 액션 생성
+ * - 방 비움, 게임 종료, 강제 정리 등
+ */
 function cancelAllTimers(): GameAction[] {
   return timeoutKinds.map((kind) => ({ type: "CANCEL_TIMEOUT", kind }));
 }
 
+/**
+ * votes에서 value가 있으면 __SUBMITTED__로 마스킹
+ */
 function maskVotes(votes: Record<string, string | null>): Record<string, string | null> {
   return Object.fromEntries(Object.entries(votes).map(([voter, target]) => [voter, target ? "__SUBMITTED__" : null]));
 }
@@ -478,6 +622,9 @@ function okResult<T extends RoomState>(room: T, actions: GameAction[]): ApplyRes
   return { ok: true, room, actions };
 }
 
+/**
+ * 현재 상태에서 허용되지 않는 이벤트 에러 생성
+ */
 function wrongState(event: GameEvent): ApplyResult {
   return { ok: false, reason: `WRONG_STATE_FOR_${event.type}` };
 }
