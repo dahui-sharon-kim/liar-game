@@ -4,7 +4,7 @@ import type { GameAction, RoomState, TimeoutKind } from "../types";
 import { RoomService } from "../room/room.service";
 
 export class ActionRunner {
-  private timers = new Map<string, Map<TimeoutKind, NodeJS.Timeout>>();
+  private timers = new Map<string, Map<TimeoutKind, NodeJS.Timeout>>(); // 타이머 저장소: 방마다 타이머 종류 관리
 
   constructor(
     private readonly rooms: RoomService,
