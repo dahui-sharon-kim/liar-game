@@ -51,7 +51,7 @@ export class RoomService {
   setReady(socketId: string, isReady: boolean, at = Date.now()): ApplyResult {
     const roomCode = this.getRoomCodeBySocket(socketId);
     if (!roomCode) return { ok: false, reason: "ROOM_NOT_FOUND", code: "NOT_FOUND" };
-    return this.dispatch(roomCode, { type: "PLAYER_LEAVE", socketId, at });
+    return this.dispatch(roomCode, { type: isReady ? "READY_ON" : "READY_OFF", socketId, at });
   }
 
   startGame(socketId: string, at = Date.now()): ApplyResult {
