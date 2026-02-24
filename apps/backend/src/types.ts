@@ -54,8 +54,8 @@ export type PublicPlayerState = Omit<PlayerState, "role">;
 type DistributiveOmit<T, K extends PropertyKey> = T extends any ? Omit<T, K> : never;
 
 /**
- * PublicRoomSnapshot is the RoomState union, but with players replaced by PublicPlayerState[].
- * This stays a union, so vote states still have `votes`, resolve states still have `tally`, etc.
+ * RoomState의 유니온 구조는 유지하면서, 각 상태의 players만 role이 없는 공개용 타입 PublicPlayerState으로 바꾼 것.
+ * 따라서 vote states들은 여전히 `votes`가 있고 resolve states들은 여전히 `tally`가 있는 등 유지됨.
  */
 export type PublicRoomSnapshot = RoomState extends infer R
   ? R extends RoomState
