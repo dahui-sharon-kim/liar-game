@@ -125,5 +125,12 @@
   }
   body {
     @apply bg-background text-foreground;
+    font-family: var(--font-pretendard), sans-serif;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: color-mix(in oklab, var(--primary) 65%, transparent);
+    color: var(--primary-foreground);
   }
 }
