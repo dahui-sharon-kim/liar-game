@@ -1,5 +1,3 @@
-"use client";
-
 import { AlertCircleIcon } from "lucide-react";
 import { GameProvider, useGame } from "@/app/game-context";
 import { JoinOrCreate } from "@/app/entry/join-or-create";

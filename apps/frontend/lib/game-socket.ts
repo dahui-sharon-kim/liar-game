@@ -3,7 +3,7 @@
 import { io, type Socket } from "socket.io-client";
 import type { Ack } from "@/lib/game-types";
 
-const GAME_SERVER_URL = process.env.NEXT_PUBLIC_GAME_SERVER_URL ?? "http://localhost:4000";
+const GAME_SERVER_URL = import.meta.env.VITE_GAME_SERVER_URL ?? "http://localhost:4000";
 
 export function createGameSocket(): Socket {
   return io(`${GAME_SERVER_URL}/game`, {

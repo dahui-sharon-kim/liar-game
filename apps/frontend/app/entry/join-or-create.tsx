@@ -1,5 +1,3 @@
-"use client";
-
 import { LoaderCircleIcon } from "lucide-react";
 import { useGame } from "@/app/game-context";
 import { Button } from "@/components/ui/button";

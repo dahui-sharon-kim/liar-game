@@ -40,3 +40,11 @@ repo/
 ## Development Guide
 
 - [Commit Convention](./docs/commit-convention.md)
+
+## Claude Settings
+
+- shadcn MCP 서버 추가
+
+```bash
+claude mcp add --transport http shadcn https://www.shadcn.io/api/mcp
+```

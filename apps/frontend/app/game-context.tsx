@@ -1,5 +1,3 @@
-"use client";
-
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { Socket } from "socket.io-client";
 import { clearRoomSession, readSession, writeSession } from "@/lib/access-sessions";
