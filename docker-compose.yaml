@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  # 데이터베이스 설정 (PostgreSQL)
+  db:
+    image: postgres:15-alpine
+    container_name: liar-game-db
+    restart: always
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: liargame
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  # 실시간 통신(WebSocket) 성능을 높여줄 저장소 (Redis)
+  redis:
+    image: redis:7-alpine
+    container_name: liar-game-redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+volumes:
+  db_data:
